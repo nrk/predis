@@ -366,6 +366,10 @@ abstract class ClusterStrategy implements StrategyInterface
     {
         $slot = $command->getSlot();
 
+        if (false === $slot) {
+            return $slot;
+        }
+
         if (!isset($slot) && isset($this->commands[$cmdID = $command->getId()])) {
             $key = call_user_func($this->commands[$cmdID], $command);
 
