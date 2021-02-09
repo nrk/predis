@@ -18,6 +18,8 @@ use Predis\Connection\NodeConnectionInterface;
 use Predis\Response\ErrorInterface as ErrorResponseInterface;
 use Predis\Response\ResponseInterface;
 use Predis\Response\ServerException;
+use Predis\Transaction\AbortedMultiExecException;
+use Predis\Transaction\MultiExec;
 
 /**
  * Command pipeline wrapped into a MULTI / EXEC transaction.
@@ -62,28 +64,43 @@ class Atomic extends Pipeline
     protected function executePipeline(ConnectionInterface $connection, \SplQueue $commands)
     {
         $profile = $this->getClient()->getProfile();
-        $connection->executeCommand($profile->createCommand('multi'));
+        $multi = $profile->createCommand('multi');
+        $exec = $profile->createCommand('exec');
+
+        $connection->writeRequest($multi);
 
         foreach ($commands as $command) {
             $connection->writeRequest($command);
+        }
+
+        $connection->writeRequest($exec);
+
+        $response = $connection->readResponse($multi);
+        if ($response instanceof ErrorResponseInterface) {
+            $this->exception($connection, $response); // close connection and throw ServerException
         }
 
         foreach ($commands as $command) {
             $response = $connection->readResponse($command);
 
             if ($response instanceof ErrorResponseInterface) {
-                $connection->executeCommand($profile->createCommand('discard'));
-                throw new ServerException($response->getMessage());
+                $this->exception($connection, $response); // close connection and throw ServerException
             }
         }
 
-        $executed = $connection->executeCommand($profile->createCommand('exec'));
+        $executed = $connection->readResponse($exec);
 
         if (!isset($executed)) {
             // TODO: should be throwing a more appropriate exception.
             throw new ClientException(
                 'The underlying transaction has been aborted by the server.'
             );
+        }
+
+        // if EXEC returned an error, throw ServerException (but don't close connection, all responses
+        // have been read and are accounted for)
+        if ($executed instanceof ErrorResponseInterface) {
+            throw new ServerException($executed->getMessage());
         }
 
         if (count($executed) !== count($commands)) {
